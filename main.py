@@ -73,10 +73,10 @@ def extract_otp(text):
     match = re.search(r'OTP Code:\s*(\d{4,8})', text)
     if match:
         return match.group(1)
-    match = re.search(r'(\d{4,8})\s+is your (Instagram|Facebook) code', text, re.I)
+    match = re.search(r'(\d{4,8})\s+is your (Instagram|Facebook|TikTok) code', text, re.I)
     if match:
         return match.group(1)
-    match = re.search(r'(\d{4,8})\s+est votre code (Instagram|Facebook)', text, re.I)
+    match = re.search(r'(\d{4,8})\s+est votre code (Instagram|Facebook|TikTok)', text, re.I)
     if match:
         return match.group(1)
     codes = re.findall(r'\b(\d{4,8})\b', text)
@@ -95,6 +95,8 @@ def detect_platform(text):
         return "Instagram"
     if 'whatsapp' in t:
         return "WhatsApp"
+    if 'tiktok' in t:
+        return "TikTok"
     return "Other"
 
 def extract_country(text):
@@ -133,11 +135,11 @@ def extract_clean_message(text):
     if not text:
         return ""
     
-    match = re.search(r'(#\s*\d{4,8}\s+is your (Instagram|Facebook) code[^\n]*)', text, re.I)
+    match = re.search(r'(#\s*\d{4,8}\s+is your (Instagram|Facebook|TikTok) code[^\n]*)', text, re.I)
     if match:
         return match.group(1).strip()
     
-    match = re.search(r'(#\s*\d{4,8}\s+est votre code (Instagram|Facebook)[^\n]*)', text, re.I)
+    match = re.search(r'(#\s*\d{4,8}\s+est votre code (Instagram|Facebook|TikTok)[^\n]*)', text, re.I)
     if match:
         return match.group(1).strip()
     
@@ -696,7 +698,7 @@ async def index(request):
         <div class="container">
             <div class="header">
                 <div class="logo">
-                    <img src="https://emailmart.shop/API/bot.jpg" alt="Logo" onerror="this.src='https://placehold.co/70x70/38bdf8/white?text=G'">
+                    <img src="https://i.ibb.co/RpzTyt1v/bot.jpg" alt="bot" border="0">
                 </div>
                 <h1>GetPaid OTP Finder</h1>
                 <div class="full-title">🔐 Full Connected GetPaid OTP 2.0</div>
@@ -803,9 +805,10 @@ async def index(request):
 
             function getPlatformIcon(platform) {
                 const icons = {
-                    'Facebook': 'https://emailmart.shop/API/facebook.jpg',
-                    'Instagram': 'https://emailmart.shop/API/instagram.jpg',
-                    'WhatsApp': 'https://emailmart.shop/API/whatsapp.jpg'
+                    'Facebook': 'https://i.ibb.co/Rk4wk8d5/facebook.jpg',
+                    'Instagram': 'https://i.ibb.co/bgcdmD3P/instagram.jpg',
+                    'WhatsApp': 'https://i.ibb.co/QvvDqSRs/whatsapp.jpg',
+                    'TikTok': 'https://i.ibb.co/ymBVDLyF/png-transparent-tiktok-tiktok-logo-tiktok-icon-thumbnail.png'
                 };
                 let url = icons[platform];
                 if (url) {
