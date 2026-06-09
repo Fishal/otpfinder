@@ -5,23 +5,20 @@ from aiohttp import web
 from telethon import TelegramClient
 import pycountry
 
-# ================= কনফিগ =================
+# ================= CONFIG =================
 api_id = 33959126
 api_hash = "e6045668a34aecdcd802eca0db3844fa"
 GROUP_ID = -1002531902737
 
-# ================= সেশন ফাইল সাপোর্ট =================
-# Railway Environment Variable চেক করুন
+# ================= SESSION FILE SUPPORT =================
 STRING_SESSION = os.environ.get("STRING_SESSION")
 TELETHON_SESSION = os.environ.get("TELETHON_SESSION")
 
 if STRING_SESSION:
-    # String Session থেকে লোড করুন
     from telethon.sessions import StringSession
     client = TelegramClient(StringSession(STRING_SESSION), api_id, api_hash)
     print("✅ Using String Session")
 elif TELETHON_SESSION:
-    # Base64 Session থেকে লোড করুন
     import base64
     import tempfile
     session_bytes = base64.b64decode(TELETHON_SESSION)
@@ -32,13 +29,13 @@ elif TELETHON_SESSION:
     client = TelegramClient(session_name, api_id, api_hash)
     print("✅ Using Base64 Session")
 else:
-    # লোকাল সেশন ফাইল ব্যবহার করুন (আপনার আগের মতো)
     client = TelegramClient("user_session", api_id, api_hash)
     print("✅ Using local session file")
 
 all_otps = []
+otp_cache = {}  # Cache for faster searching
 
-# ================= ফাংশন (আগের মতোই, শুধু match_number_by_pattern ঠিক করা হয়েছে) =================
+# ================= FUNCTIONS =================
 
 def get_country_flag_emoji(country_name):
     if not country_name or country_name == "Unknown":
@@ -58,98 +55,161 @@ def get_country_flag_emoji(country_name):
 def extract_number(text):
     if not text:
         return None
+    
+    # Try to find Number: pattern
     match = re.search(r'Number:\s*(\d[\d\*]+)', text)
     if match:
         return match.group(1)
+    
+    # Try to find masked number pattern (e.g., 9929***3727)
     match = re.search(r'(\d{3,4}\*{3}\d{3,4})', text)
     if match:
         return match.group(1)
+    
+    # Try to find plain numbers (8-15 digits)
     numbers = re.findall(r'\b(\d{8,15})\b', text)
-    return numbers[0] if numbers else None
+    if numbers:
+        return numbers[0]
+    
+    return None
 
 def extract_otp(text):
     if not text:
         return None
+    
+    # OTP Code: pattern
     match = re.search(r'OTP Code:\s*(\d{4,8})', text)
     if match:
         return match.group(1)
-    match = re.search(r'(\d{4,8})\s+is your (Instagram|Facebook|TikTok) code', text, re.I)
-    if match:
-        return match.group(1)
-    match = re.search(r'(\d{4,8})\s+est votre code (Instagram|Facebook|TikTok)', text, re.I)
-    if match:
-        return match.group(1)
+    
+    # Instagram/Facebook/TikTok code patterns
+    patterns = [
+        r'#\s*(\d{4,8})\s+is your (?:Instagram|Facebook|TikTok) code',
+        r'#\s*(\d{4,8})\s+est votre code (?:Instagram|Facebook|TikTok)',
+        r'#\s*(\d{4,8})\s+é o seu código de (?:Instagram|Facebook)',
+        r'#\s*(\d{4,8})\s+adalah kode (?:Facebook|Instagram) Anda',
+        r'#\s*(\d{4,8})\s+to Twój kod (?:Facebook|Instagram)',
+        r'(\d{4,8})\s+is your (?:Instagram|Facebook|TikTok) code',
+        r'(\d{4,8})\s+est votre code (?:Instagram|Facebook|TikTok)',
+        r'(\d{4,8})\s+é o seu código (?:Instagram|Facebook)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1)
+    
+    # Generic code extraction (4-8 digits)
     codes = re.findall(r'\b(\d{4,8})\b', text)
     for code in codes:
-        if not re.match(r'^(19|20)\d{2}', code):
+        # Skip years (1900-2099)
+        if not re.match(r'^(19|20)\d{2}$', code):
             return code
+    
     return None
 
 def detect_platform(text):
     if not text:
         return "Unknown"
     t = text.lower()
-    if 'facebook' in t or 'est votre code facebook' in t:
-        return "Facebook"
-    if 'instagram' in t or '#ig' in t:
-        return "Instagram"
-    if 'whatsapp' in t:
-        return "WhatsApp"
-    if 'tiktok' in t:
-        return "TikTok"
+    
+    platforms = {
+        'facebook': 'Facebook',
+        'instagram': 'Instagram',
+        'whatsapp': 'WhatsApp',
+        'tiktok': 'TikTok',
+        'google': 'Google',
+        'twitter': 'Twitter',
+        'apple': 'Apple',
+        'microsoft': 'Microsoft',
+        'telegram': 'Telegram',
+        'discord': 'Discord',
+        'snapchat': 'Snapchat',
+        'linkedin': 'LinkedIn',
+        'amazon': 'Amazon',
+        'paypal': 'PayPal',
+        'github': 'GitHub',
+        'spotify': 'Spotify',
+        'netflix': 'Netflix',
+    }
+    
+    for key, name in platforms.items():
+        if key in t:
+            return name
+    
     return "Other"
 
 def extract_country(text):
+    # Try to find Country: pattern
     match = re.search(r'Country:\s*[🇦-🇿]+\s*([\w\s]+)', text)
     if match:
         return match.group(1).strip()
+    
+    # Try to find flag + country name
+    match = re.search(r'[🇦-🇿]{2}\s+([\w\s]+)', text)
+    if match:
+        return match.group(1).strip()
+    
     return "Unknown"
 
-def get_first_last_digits(number):
+def clean_number(number):
+    """Extract digits only from number"""
+    if not number:
+        return ""
+    return re.sub(r'[^0-9]', '', number)
+
+def get_first_last_digits(number, digits=3):
+    """Get first N and last N digits of a number"""
     if not number:
         return None, None
-    digits = re.sub(r'[^0-9]', '', number)
-    if len(digits) < 6:
+    clean = clean_number(number)
+    if len(clean) < (digits * 2):
         return None, None
-    return digits[:3], digits[-3:]
+    return clean[:digits], clean[-digits:]
 
 def match_number_by_pattern(sms_number, search_number):
     """
-    এটাই শুধু ঠিক করা হলো - মাস্ক করা নম্বর এবং সার্চ নম্বর ম্যাচ করবে
-    যেমন: sms_number = "9929***3727", search_number = "992970963727" হলে ম্যাচ করবে
+    Match numbers with improved accuracy:
+    1. Exact match (full digits)
+    2. First 3 + Last 3 digits match
+    3. Last 6 digits match
+    4. First 4 + Last 4 digits match
     """
     if not sms_number or not search_number:
         return False
     
-    # শুধু ডিজিট বের করা
-    sms_digits = re.sub(r'[^0-9]', '', sms_number)
-    search_digits = re.sub(r'[^0-9]', '', search_number)
+    sms_clean = clean_number(sms_number)
+    search_clean = clean_number(search_number)
     
-    # সরাসরি ডিজিট ম্যাচ
-    if sms_digits == search_digits:
+    # Exact match
+    if sms_clean == search_clean:
         return True
     
-    # মাস্ক করা নম্বরের জন্য (যেমন: 9929***3727)
-    if '***' in sms_number:
-        # প্যাটার্ন বানানো: 9929***3727 -> 9929\d{3}3727
-        pattern = sms_number.replace('***', r'\d{3}')
-        # পুরো স্ট্রিং ম্যাচ
-        if re.match(f'^{pattern}$', search_number):
-            return True
-        
-        # শুধু ডিজিট দিয়েও চেক
-        pattern_digits = sms_number.replace('*', r'\d')
-        if re.match(f'^{pattern_digits}$', search_number):
+    # If search number has more digits, check if sms is contained
+    if len(search_clean) > len(sms_clean) and sms_clean in search_clean:
+        return True
+    
+    if len(sms_clean) > len(search_clean) and search_clean in sms_clean:
+        return True
+    
+    # First 3 + Last 3 match
+    sms_first3, sms_last3 = get_first_last_digits(sms_clean, 3)
+    search_first3, search_last3 = get_first_last_digits(search_clean, 3)
+    
+    if sms_first3 and search_first3 and sms_first3 == search_first3 and sms_last3 == search_last3:
+        return True
+    
+    # Last 6 digits match
+    if len(sms_clean) >= 6 and len(search_clean) >= 6:
+        if sms_clean[-6:] == search_clean[-6:]:
             return True
     
-    # প্রথম 4 ও শেষ 4 ডিজিট চেক
-    sms_first, sms_last = get_first_last_digits(sms_number)
-    search_first, search_last = get_first_last_digits(search_number)
+    # First 4 + Last 4 match
+    sms_first4, sms_last4 = get_first_last_digits(sms_clean, 4)
+    search_first4, search_last4 = get_first_last_digits(search_clean, 4)
     
-    if sms_first and search_first and sms_last and search_last:
-        # প্রথম 3 এবং শেষ 3 ডিজিট ম্যাচ করলে true
-        if sms_first == search_first and sms_last == search_last:
-            return True
+    if sms_first4 and search_first4 and sms_first4 == search_first4 and sms_last4 == search_last4:
+        return True
     
     return False
 
@@ -157,31 +217,47 @@ def extract_clean_message(text):
     if not text:
         return ""
     
-    match = re.search(r'(#\s*\d{4,8}\s+is your (Instagram|Facebook|TikTok) code[^\n]*)', text, re.I)
-    if match:
-        return match.group(1).strip()
+    # Try to extract the actual OTP message line
+    patterns = [
+        r'(#\s*\d{4,8}\s+is your (?:Instagram|Facebook|TikTok) code[^\n]*)',
+        r'(#\s*\d{4,8}\s+est votre code (?:Instagram|Facebook|TikTok)[^\n]*)',
+        r'(#\s*\d{4,8}\s+é o seu código (?:Instagram|Facebook)[^\n]*)',
+        r'(#\s*\d{4,8}\s+adalah kode (?:Facebook|Instagram) Anda[^\n]*)',
+        r'(#\s*\d{4,8}\s+to Twój kod (?:Facebook|Instagram)[^\n]*)',
+        r'(#\s*[^\n]+)',
+    ]
     
-    match = re.search(r'(#\s*\d{4,8}\s+est votre code (Instagram|Facebook|TikTok)[^\n]*)', text, re.I)
-    if match:
-        return match.group(1).strip()
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).strip()
     
-    match = re.search(r'(#\s*[^\n]+)', text)
-    if match:
-        return match.group(1).strip()
-    
+    # Return first 150 chars if nothing matches
     return text[:150] + "..." if len(text) > 150 else text
 
-# ================= মেসেজ সংগ্রহ =================
+def format_number_display(number):
+    """Format number for display with masking"""
+    if not number:
+        return "—"
+    clean = clean_number(number)
+    if len(clean) <= 6:
+        return clean
+    # Show first 3 and last 3 with asterisks
+    return f"{clean[:3]}***{clean[-3:]}"
+
+# ================= MESSAGE FETCHING =================
 
 async def fetch_otps():
-    global all_otps
-    print("\n📡 গ্রুপ থেকে মেসেজ পড়ছি...")
+    global all_otps, otp_cache
+    
+    print("\n📡 Fetching messages from group...")
     
     try:
         messages = []
         seen = set()
+        new_cache = {}
         
-        async for msg in client.iter_messages(GROUP_ID, limit=300):
+        async for msg in client.iter_messages(GROUP_ID, limit=500):
             text = msg.message or msg.raw_text or ""
             
             if not text or len(text) < 10:
@@ -197,33 +273,79 @@ async def fetch_otps():
             flag_emoji = get_country_flag_emoji(country)
             clean_msg = extract_clean_message(text)
             
-            key = f"{number}_{otp}"
+            # Create unique key
+            clean_num = clean_number(number)
+            key = f"{clean_num}_{otp}"
+            
             if key in seen:
                 continue
             
             seen.add(key)
             
-            messages.append({
+            item = {
                 "number": number,
+                "number_clean": clean_num,
                 "otp": otp if otp else "Not Found",
                 "platform": platform,
                 "country": country,
                 "flag": flag_emoji,
-                "message": clean_msg
-            })
+                "message": clean_msg,
+                "first3": clean_num[:3] if len(clean_num) >= 6 else None,
+                "last3": clean_num[-3:] if len(clean_num) >= 6 else None,
+            }
             
-            if len(messages) >= 200:
+            messages.append(item)
+            
+            # Add to cache for faster searching
+            if clean_num:
+                new_cache[clean_num] = item
+                # Also cache by last 6 digits
+                if len(clean_num) >= 6:
+                    new_cache[clean_num[-6:]] = item
+            
+            if len(messages) >= 300:
                 break
         
         messages.reverse()
         all_otps = messages
+        otp_cache = new_cache
         
-        print(f"✅ {len(messages)} টি OTP পাওয়া গেছে!")
+        print(f"✅ Fetched {len(messages)} OTPs!")
+        
+        # Show summary
+        platforms = {}
+        for item in messages:
+            p = item['platform']
+            platforms[p] = platforms.get(p, 0) + 1
+        
+        print(f"📊 Summary: {dict(platforms)}")
         
     except Exception as e:
-        print(f"❌ এরর: {e}")
+        print(f"❌ Error fetching: {e}")
 
-# ================= ওয়েব সার্ভার =================
+async def quick_search(number):
+    """Fast search using cache"""
+    if not number:
+        return None
+    
+    clean_num = clean_number(number)
+    
+    # Check cache first
+    if clean_num in otp_cache:
+        return otp_cache[clean_num]
+    
+    # Check by last 6 digits
+    if len(clean_num) >= 6 and clean_num[-6:] in otp_cache:
+        return otp_cache[clean_num[-6:]]
+    
+    # Fallback to linear search
+    for item in all_otps:
+        if match_number_by_pattern(item['number'], number):
+            return item
+    
+    return None
+
+# ================= WEB SERVER =================
 
 async def index(request):
     html = '''
@@ -245,7 +367,6 @@ async def index(request):
                 color: #e2e8f0;
                 min-height: 100vh;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-                transition: all 0.3s ease;
                 padding: 0;
                 margin: 0;
             }
@@ -261,7 +382,6 @@ async def index(request):
                 padding: 20px 16px;
             }
 
-            /* Header */
             .header {
                 text-align: center;
                 margin-bottom: 20px;
@@ -308,7 +428,24 @@ async def index(request):
                 margin-top: 4px;
             }
 
-            /* Controls */
+            .stats {
+                display: flex;
+                justify-content: center;
+                gap: 20px;
+                margin-top: 12px;
+                font-size: 12px;
+            }
+
+            .stat-item {
+                background: #0f172a;
+                padding: 6px 12px;
+                border-radius: 20px;
+            }
+
+            body.light .stat-item {
+                background: #e2e8f0;
+            }
+
             .controls {
                 display: flex;
                 justify-content: flex-end;
@@ -316,7 +453,7 @@ async def index(request):
                 margin-bottom: 16px;
             }
 
-            .theme-btn, .info-btn {
+            .theme-btn, .info-btn, .refresh-btn {
                 border: none;
                 padding: 8px 18px;
                 border-radius: 40px;
@@ -328,18 +465,17 @@ async def index(request):
                 font-size: 13px;
             }
 
-            body.light .theme-btn, body.light .info-btn {
+            body.light .theme-btn, body.light .info-btn, body.light .refresh-btn {
                 background: #e2e8f0;
                 color: #1e293b;
             }
 
-            .theme-btn:hover, .info-btn:hover {
+            .theme-btn:hover, .info-btn:hover, .refresh-btn:hover {
                 background: #0ea5e9;
                 color: white;
                 transform: scale(0.96);
             }
 
-            /* Modal */
             .modal {
                 display: none;
                 position: fixed;
@@ -390,7 +526,6 @@ async def index(request):
                 font-weight: bold;
             }
 
-            /* Search Card */
             .search-card {
                 background: #1e293b;
                 border-radius: 24px;
@@ -459,7 +594,6 @@ async def index(request):
                 transform: scale(0.96);
             }
 
-            /* Loading */
             .loading {
                 text-align: center;
                 padding: 40px;
@@ -480,7 +614,6 @@ async def index(request):
                 100% { transform: rotate(360deg); }
             }
 
-            /* Result Card */
             .result-card {
                 background: #1e293b;
                 border-radius: 24px;
@@ -645,7 +778,37 @@ async def index(request):
                 background: #fee2e2;
             }
 
-            /* Telegram Button */
+            .suggestions {
+                margin-top: 20px;
+                display: none;
+            }
+
+            .suggestions h4 {
+                margin-bottom: 10px;
+                font-size: 14px;
+                color: #94a3b8;
+            }
+
+            .suggestion-list {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .suggestion-item {
+                background: #334155;
+                padding: 8px 16px;
+                border-radius: 40px;
+                font-size: 12px;
+                cursor: pointer;
+                transition: 0.2s;
+            }
+
+            .suggestion-item:hover {
+                background: #0ea5e9;
+                transform: scale(0.96);
+            }
+
             .telegram-btn {
                 display: flex;
                 align-items: center;
@@ -724,20 +887,24 @@ async def index(request):
                 </div>
                 <h1>GetPaid OTP Finder</h1>
                 <div class="full-title">🔐 Full Connected GetPaid OTP 2.0</div>
+                <div class="stats" id="stats">
+                    <div class="stat-item">📱 Loading...</div>
+                </div>
             </div>
 
             <div class="controls">
+                <button class="refresh-btn" onclick="refreshData()">🔄 Refresh</button>
                 <button class="theme-btn" onclick="toggleTheme()">🌓 Light/Dark</button>
                 <button class="info-btn" onclick="openModal()">ℹ️ Info</button>
             </div>
 
-            <!-- Modal -->
             <div id="infoModal" class="modal">
                 <div class="modal-content">
                     <h3>ℹ️ Information</h3>
                     <p>📌 Click on OTP box to copy code instantly</p>
                     <p>🔒 100% Safe & Secured Server</p>
                     <p>📱 Enter number → Click Search</p>
+                    <p>🔄 Data refreshes every 10 seconds</p>
                     <button class="close-modal" onclick="closeModal()">Got it</button>
                 </div>
             </div>
@@ -786,7 +953,11 @@ async def index(request):
                 </div>
             </div>
 
-            <!-- Telegram Button -->
+            <div class="suggestions" id="suggestions">
+                <h4>📋 Recent Numbers (click to search):</h4>
+                <div class="suggestion-list" id="suggestionList"></div>
+            </div>
+
             <a class="telegram-btn" href="https://t.me/otpincomereal2_bot" target="_blank">
                 <div class="telegram-icon">
                     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -801,6 +972,46 @@ async def index(request):
 
         <script>
             let currentOTP = '';
+            let recentNumbers = [];
+
+            async function updateStats() {
+                try {
+                    let response = await fetch('/stats');
+                    let data = await response.json();
+                    document.getElementById('stats').innerHTML = `
+                        <div class="stat-item">📱 ${data.total || 0} OTPs</div>
+                        <div class="stat-item">🌍 ${data.platforms || 0} Platforms</div>
+                    `;
+                    
+                    if (data.recent_numbers && data.recent_numbers.length > 0) {
+                        recentNumbers = data.recent_numbers;
+                        let suggestionHtml = '';
+                        for (let num of recentNumbers.slice(0, 8)) {
+                            suggestionHtml += `<div class="suggestion-item" onclick="searchNumber('${num}')">📞 ${num}</div>`;
+                        }
+                        document.getElementById('suggestionList').innerHTML = suggestionHtml;
+                        document.getElementById('suggestions').style.display = 'block';
+                    }
+                } catch(e) {}
+            }
+
+            async function refreshData() {
+                showToast('🔄 Refreshing data...');
+                try {
+                    await fetch('/refresh', { method: 'POST' });
+                    setTimeout(() => {
+                        updateStats();
+                        showToast('✅ Data refreshed!');
+                    }, 2000);
+                } catch(e) {
+                    showToast('❌ Refresh failed', true);
+                }
+            }
+
+            function searchNumber(number) {
+                document.getElementById('numberInput').value = number;
+                searchOTP();
+            }
 
             function toggleTheme() {
                 document.body.classList.toggle('light');
@@ -816,7 +1027,7 @@ async def index(request):
 
             function showToast(msg, isError = false) {
                 let toast = document.getElementById('toast');
-                toast.textContent = msg || (isError ? '❌ Failed to copy' : '✅ Copied!');
+                toast.textContent = msg || (isError ? '❌ Failed' : '✅ Copied!');
                 toast.className = 'toast' + (isError ? ' error' : '');
                 toast.style.display = 'block';
                 setTimeout(() => {
@@ -836,7 +1047,7 @@ async def index(request):
                 if (url) {
                     return `<img src="${url}" alt="${platform}" onerror="this.src='https://placehold.co/40x40/1e293b/white?text=${platform[0]}'">`;
                 }
-                return `<div style="width:40px;height:40px;background:#334155;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;">?</div>`;
+                return `<div style="width:40px;height:40px;background:#334155;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;">${platform[0] || '?'}</div>`;
             }
 
             async function searchOTP() {
@@ -932,6 +1143,10 @@ async def index(request):
                     modal.style.display = 'none';
                 }
             }
+
+            // Initial load
+            updateStats();
+            setInterval(updateStats, 30000);
         </script>
     </body>
     </html>
@@ -945,18 +1160,52 @@ async def search_api(request):
     
     print(f"\n🔍 Searching: {number}")
     
-    for item in all_otps:
-        if match_number_by_pattern(item['number'], number):
-            print(f"   ✅ Found: {item['number']} → {item['otp']}")
-            return web.json_response({'found': True, 'data': item})
+    # Use quick search with cache
+    result = await quick_search(number)
+    
+    if result:
+        # Format number for display
+        display_number = format_number_display(result['number'])
+        result['number'] = display_number
+        print(f"   ✅ Found: {result['number_clean']} → {result['otp']}")
+        return web.json_response({'found': True, 'data': result})
     
     print(f"   ❌ Not found: {number}")
     return web.json_response({'found': False})
 
+async def stats_api(request):
+    """Get statistics about OTPs"""
+    platforms = {}
+    for item in all_otps:
+        p = item['platform']
+        platforms[p] = platforms.get(p, 0) + 1
+    
+    # Get recent unique numbers
+    recent_numbers = []
+    seen_nums = set()
+    for item in reversed(all_otps[-50:]):
+        clean = item['number_clean']
+        if clean not in seen_nums and len(recent_numbers) < 10:
+            seen_nums.add(clean)
+            recent_numbers.append(format_number_display(item['number']))
+    
+    return web.json_response({
+        'total': len(all_otps),
+        'platforms': len(platforms),
+        'platform_stats': platforms,
+        'recent_numbers': recent_numbers
+    })
+
+async def refresh_api(request):
+    """Manually refresh OTPs"""
+    asyncio.create_task(fetch_otps())
+    return web.json_response({'status': 'refreshing'})
+
 async def background_updater():
+    """Auto refresh every 10 seconds"""
     while True:
         await fetch_otps()
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
 
 async def main():
     print("=" * 50)
@@ -974,8 +1223,9 @@ async def main():
         app = web.Application()
         app.router.add_get('/', index)
         app.router.add_get('/search', search_api)
+        app.router.add_get('/stats', stats_api)
+        app.router.add_post('/refresh', refresh_api)
         
-        # Railway এর জন্য PORT ব্যবহার করুন
         port = int(os.environ.get("PORT", 20300))
         
         runner = web.AppRunner(app)
