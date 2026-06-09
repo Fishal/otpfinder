@@ -11,17 +11,14 @@ api_hash = "e6045668a34aecdcd802eca0db3844fa"
 GROUP_ID = -1002531902737
 
 # ================= সেশন ফাইল সাপোর্ট =================
-# Railway Environment Variable চেক করুন
 STRING_SESSION = os.environ.get("STRING_SESSION")
 TELETHON_SESSION = os.environ.get("TELETHON_SESSION")
 
 if STRING_SESSION:
-    # String Session থেকে লোড করুন
     from telethon.sessions import StringSession
     client = TelegramClient(StringSession(STRING_SESSION), api_id, api_hash)
     print("✅ Using String Session")
 elif TELETHON_SESSION:
-    # Base64 Session থেকে লোড করুন
     import base64
     import tempfile
     session_bytes = base64.b64decode(TELETHON_SESSION)
@@ -32,13 +29,12 @@ elif TELETHON_SESSION:
     client = TelegramClient(session_name, api_id, api_hash)
     print("✅ Using Base64 Session")
 else:
-    # লোকাল সেশন ফাইল ব্যবহার করুন (আপনার আগের মতো)
     client = TelegramClient("user_session", api_id, api_hash)
     print("✅ Using local session file")
 
 all_otps = []
 
-# ================= ফাংশন (আগের মতোই) =================
+# ================= ফাংশন =================
 
 def get_country_flag_emoji(country_name):
     if not country_name or country_name == "Unknown":
@@ -56,14 +52,25 @@ def get_country_flag_emoji(country_name):
         return "🏳️"
 
 def extract_number(text):
+    """মেসেজ থেকে নম্বর এক্সট্র্যাক্ট করা"""
     if not text:
         return None
+    
+    # প্যাটার্ন: Number: 9929***3727
     match = re.search(r'Number:\s*(\d[\d\*]+)', text)
     if match:
         return match.group(1)
-    match = re.search(r'(\d{3,4}\*{3}\d{3,4})', text)
+    
+    # প্যাটার্ন: 📞 Number: 9929***3727
+    match = re.search(r'📞\s*Number:\s*(\d[\d\*]+)', text)
     if match:
         return match.group(1)
+    
+    # অন্য ফরম্যাট
+    numbers = re.findall(r'\b(\d{3,4}\*{3}\d{3,4})\b', text)
+    if numbers:
+        return numbers[0]
+    
     numbers = re.findall(r'\b(\d{8,15})\b', text)
     return numbers[0] if numbers else None
 
@@ -71,6 +78,9 @@ def extract_otp(text):
     if not text:
         return None
     match = re.search(r'OTP Code:\s*(\d{4,8})', text)
+    if match:
+        return match.group(1)
+    match = re.search(r'🔑\s*OTP Code:\s*(\d{4,8})', text)
     if match:
         return match.group(1)
     match = re.search(r'(\d{4,8})\s+is your (Instagram|Facebook|TikTok) code', text, re.I)
@@ -81,7 +91,7 @@ def extract_otp(text):
         return match.group(1)
     codes = re.findall(r'\b(\d{4,8})\b', text)
     for code in codes:
-        if not re.match(r'^(19|20)\d{2}', code):
+        if not re.match(r'^(19|20)\d{2}', code) and len(code) >= 4:
             return code
     return None
 
@@ -89,7 +99,7 @@ def detect_platform(text):
     if not text:
         return "Unknown"
     t = text.lower()
-    if 'facebook' in t or 'est votre code facebook' in t:
+    if 'facebook' in t:
         return "Facebook"
     if 'instagram' in t or '#ig' in t:
         return "Instagram"
@@ -103,31 +113,66 @@ def extract_country(text):
     match = re.search(r'Country:\s*[🇦-🇿]+\s*([\w\s]+)', text)
     if match:
         return match.group(1).strip()
+    match = re.search(r'🌐\s*Country:\s*[🇦-🇿]+\s*([\w\s]+)', text)
+    if match:
+        return match.group(1).strip()
     return "Unknown"
 
-def get_first_last_digits(number):
+def normalize_number(number):
+    """নম্বর নরমালাইজ করা - শুধু ডিজিট রাখা"""
     if not number:
-        return None, None
-    digits = re.sub(r'[^0-9]', '', number)
-    if len(digits) < 6:
-        return None, None
-    return digits[:3], digits[-3:]
+        return ""
+    return re.sub(r'[^0-9]', '', number)
 
-def match_number_by_pattern(sms_number, search_number):
-    if not sms_number or not search_number:
+def is_number_match(stored_number, search_number):
+    """
+    স্টোর করা নম্বর (যেমন: 9929***3727) এবং সার্চ নম্বর (যেমন: 992970963727) ম্যাচ করে কিনা চেক করা
+    """
+    if not stored_number or not search_number:
         return False
     
-    sms_first, sms_last = get_first_last_digits(sms_number)
-    search_first, search_last = get_first_last_digits(search_number)
-    
-    if sms_first is None or search_first is None:
-        return False
-    
-    if sms_first == search_first and sms_last == search_last:
+    # প্রথমে সরাসরি স্ট্রিং কম্পেয়ার
+    if stored_number == search_number:
         return True
     
-    if re.sub(r'[^0-9]', '', sms_number) == re.sub(r'[^0-9]', '', search_number):
+    # নরমালাইজ করা (শুধু ডিজিট)
+    stored_digits = normalize_number(stored_number)
+    search_digits = normalize_number(search_number)
+    
+    # সরাসরি ডিজিট ম্যাচ
+    if stored_digits == search_digits:
         return True
+    
+    # মাস্ক করা নম্বরের জন্য চেক (যেমন: 9929***3727)
+    # প্যাটার্ন তৈরি করা: 9929***3727 -> 9929\d{3}3727
+    pattern = stored_number.replace('*', '\\d')
+    pattern = f'^{pattern}$'
+    
+    if re.match(pattern, search_number):
+        return True
+    
+    # আংশিক ম্যাচ (শেষের ডিজিট চেক)
+    # যদি stored নম্বর মাস্ক করা থাকে (*** থাকে)
+    if '***' in stored_number:
+        parts = stored_number.split('***')
+        if len(parts) == 2:
+            prefix = parts[0]
+            suffix = parts[1]
+            # চেক করা prefix এবং suffix ম্যাচ করে কিনা
+            if search_digits.startswith(prefix) and search_digits.endswith(suffix):
+                # লেন্থ চেক
+                expected_len = len(prefix) + 3 + len(suffix)
+                if len(search_digits) == expected_len:
+                    return True
+                # অথবা লম্বা নম্বরের ক্ষেত্রে (কান্ট্রি কোড সহ)
+                if len(search_digits) > expected_len and search_digits[-len(suffix):] == suffix:
+                    return True
+    
+    # শেষ 4-6 ডিজিট ম্যাচ চেক (আংশিক ম্যাচ)
+    min_len = min(len(stored_digits), len(search_digits))
+    if min_len >= 4:
+        if stored_digits[-4:] == search_digits[-4:]:
+            return True
     
     return False
 
@@ -147,6 +192,11 @@ def extract_clean_message(text):
     if match:
         return match.group(1).strip()
     
+    # OTP Code লাইনটা দেখানো
+    match = re.search(r'🔑\s*OTP Code:\s*\d+[^\n]*', text)
+    if match:
+        return match.group(0).strip()
+    
     return text[:150] + "..." if len(text) > 150 else text
 
 # ================= মেসেজ সংগ্রহ =================
@@ -159,10 +209,10 @@ async def fetch_otps():
         messages = []
         seen = set()
         
-        async for msg in client.iter_messages(GROUP_ID, limit=300):
+        async for msg in client.iter_messages(GROUP_ID, limit=500):
             text = msg.message or msg.raw_text or ""
             
-            if not text or len(text) < 10:
+            if not text or len(text) < 20:
                 continue
             
             number = extract_number(text)
@@ -175,14 +225,18 @@ async def fetch_otps():
             flag_emoji = get_country_flag_emoji(country)
             clean_msg = extract_clean_message(text)
             
-            key = f"{number}_{otp}"
+            # ইউনিক আইডি তৈরি
+            normalized_num = normalize_number(number)
+            key = f"{normalized_num}_{otp}"
+            
             if key in seen:
                 continue
             
             seen.add(key)
             
             messages.append({
-                "number": number,
+                "number": number,  # আসল ফরম্যাট (মাস্ক করা থাকতে পারে)
+                "normalized": normalized_num,  # শুধু ডিজিট
                 "otp": otp if otp else "Not Found",
                 "platform": platform,
                 "country": country,
@@ -190,16 +244,23 @@ async def fetch_otps():
                 "message": clean_msg
             })
             
+            print(f"   📥 Added: {number} → {otp} [{platform}]")
+            
             if len(messages) >= 200:
                 break
         
         messages.reverse()
         all_otps = messages
         
-        print(f"✅ {len(messages)} টি OTP পাওয়া গেছে!")
+        print(f"\n✅ Total {len(messages)} OTPs collected!")
+        
+        # ডিবাগ: দেখুন কি কি নম্বর আছে
+        print("\n📋 Stored numbers:")
+        for item in messages[:10]:
+            print(f"   - {item['number']} (normalized: {item['normalized']})")
         
     except Exception as e:
-        print(f"❌ এরর: {e}")
+        print(f"❌ Error: {e}")
 
 # ================= ওয়েব সার্ভার =================
 
@@ -223,7 +284,6 @@ async def index(request):
                 color: #e2e8f0;
                 min-height: 100vh;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-                transition: all 0.3s ease;
                 padding: 0;
                 margin: 0;
             }
@@ -239,7 +299,6 @@ async def index(request):
                 padding: 20px 16px;
             }
 
-            /* Header */
             .header {
                 text-align: center;
                 margin-bottom: 20px;
@@ -247,7 +306,6 @@ async def index(request):
                 padding: 20px 16px;
                 border-radius: 28px;
                 border: 1px solid #334155;
-                transition: all 0.3s ease;
             }
 
             body.light .header {
@@ -286,7 +344,6 @@ async def index(request):
                 margin-top: 4px;
             }
 
-            /* Controls */
             .controls {
                 display: flex;
                 justify-content: flex-end;
@@ -317,7 +374,6 @@ async def index(request):
                 transform: scale(0.96);
             }
 
-            /* Modal */
             .modal {
                 display: none;
                 position: fixed;
@@ -368,14 +424,12 @@ async def index(request):
                 font-weight: bold;
             }
 
-            /* Search Card */
             .search-card {
                 background: #1e293b;
                 border-radius: 24px;
                 padding: 20px;
                 margin-bottom: 20px;
                 box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                transition: all 0.3s ease;
             }
 
             body.light .search-card {
@@ -398,7 +452,6 @@ async def index(request):
                 color: white;
                 font-size: 16px;
                 outline: none;
-                transition: all 0.3s ease;
                 text-align: center;
                 letter-spacing: 1px;
             }
@@ -430,14 +483,8 @@ async def index(request):
 
             .search-btn:hover {
                 transform: scale(0.98);
-                background: linear-gradient(135deg, #0ea5e9, #6366f1);
             }
 
-            .search-btn:active {
-                transform: scale(0.96);
-            }
-
-            /* Loading */
             .loading {
                 text-align: center;
                 padding: 40px;
@@ -458,7 +505,6 @@ async def index(request):
                 100% { transform: rotate(360deg); }
             }
 
-            /* Result Card */
             .result-card {
                 background: #1e293b;
                 border-radius: 24px;
@@ -466,7 +512,6 @@ async def index(request):
                 display: none;
                 box-shadow: 0 10px 30px rgba(0,0,0,0.3);
                 animation: fadeIn 0.3s ease;
-                transition: all 0.3s ease;
             }
 
             body.light .result-card {
@@ -484,7 +529,6 @@ async def index(request):
                 padding: 14px 16px;
                 background: #0f172a;
                 border-radius: 18px;
-                transition: all 0.3s ease;
             }
 
             body.light .info-item {
@@ -567,10 +611,6 @@ async def index(request):
                 border-color: #22c55e;
             }
 
-            .otp-box:active {
-                transform: scale(0.96);
-            }
-
             .otp-box.copied {
                 background: linear-gradient(135deg, #22c55e, #16a34a);
                 animation: pulse 0.3s ease;
@@ -604,10 +644,6 @@ async def index(request):
                 text-align: center;
             }
 
-            body.light .message-value {
-                color: #0ea5e9;
-            }
-
             .not-found {
                 text-align: center;
                 padding: 35px;
@@ -619,11 +655,6 @@ async def index(request):
                 font-weight: 500;
             }
 
-            body.light .not-found {
-                background: #fee2e2;
-            }
-
-            /* Telegram Button */
             .telegram-btn {
                 display: flex;
                 align-items: center;
@@ -642,7 +673,6 @@ async def index(request):
 
             .telegram-btn:hover {
                 transform: scale(0.98);
-                background: linear-gradient(135deg, #2563eb, #1e40af);
             }
 
             .telegram-icon {
@@ -687,11 +717,6 @@ async def index(request):
                 .platform-name { font-size: 16px; }
                 .message-value { font-size: 11px; }
             }
-
-            @media (max-width: 380px) {
-                .otp-value { font-size: 26px; letter-spacing: 3px; }
-                .container { padding: 12px 10px; }
-            }
         </style>
     </head>
     <body>
@@ -709,7 +734,6 @@ async def index(request):
                 <button class="info-btn" onclick="openModal()">ℹ️ Info</button>
             </div>
 
-            <!-- Modal -->
             <div id="infoModal" class="modal">
                 <div class="modal-content">
                     <h3>ℹ️ Information</h3>
@@ -764,7 +788,6 @@ async def index(request):
                 </div>
             </div>
 
-            <!-- Telegram Button -->
             <a class="telegram-btn" href="https://t.me/otpincomereal2_bot" target="_blank">
                 <div class="telegram-icon">
                     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -923,29 +946,44 @@ async def search_api(request):
     
     print(f"\n🔍 Searching: {number}")
     
+    # নরমালাইজড সার্চ নম্বর
+    search_normalized = normalize_number(number)
+    
     for item in all_otps:
-        if match_number_by_pattern(item['number'], number):
-            print(f"   ✅ Found: {item['number']} → {item['otp']}")
+        # বিভিন্নভাবে ম্যাচ চেক করা
+        if is_number_match(item['number'], number):
+            print(f"   ✅ Found! Stored: {item['number']} → OTP: {item['otp']}")
+            return web.json_response({'found': True, 'data': item})
+        
+        # normalized ডাটা দিয়েও চেক
+        if search_normalized and item['normalized'] == search_normalized:
+            print(f"   ✅ Found (normalized)! Stored: {item['number']} → OTP: {item['otp']}")
+            return web.json_response({'found': True, 'data': item})
+        
+        # ডিরেক্ট স্ট্রিং ম্যাচ
+        if number == item['number']:
+            print(f"   ✅ Found (direct)! Stored: {item['number']} → OTP: {item['otp']}")
             return web.json_response({'found': True, 'data': item})
     
     print(f"   ❌ Not found: {number}")
     return web.json_response({'found': False})
 
 async def background_updater():
+    """প্রতি 5 সেকেন্ড পর পর নতুন মেসেজ চেক করা"""
     while True:
         await fetch_otps()
         await asyncio.sleep(5)
 
 async def main():
     print("=" * 50)
-    print("🔰 GetPaid OTP Finder v2.0")
+    print("🔰 GetPaid OTP Finder v2.0 (Fixed Search)")
     print("=" * 50)
     
     try:
         await client.start()
         
         me = await client.get_me()
-        print(f"✅ Logged in: {me.first_name}")
+        print(f"✅ Logged in: {me.first_name} (@{me.username if me.username else 'no username'})")
         
         await fetch_otps()
         
@@ -953,7 +991,6 @@ async def main():
         app.router.add_get('/', index)
         app.router.add_get('/search', search_api)
         
-        # Railway এর জন্য PORT ব্যবহার করুন
         port = int(os.environ.get("PORT", 20300))
         
         runner = web.AppRunner(app)
@@ -965,11 +1002,15 @@ async def main():
         print(f"✅ Server running at: http://0.0.0.0:{port}")
         print("=" * 50)
         
+        # ব্যাকগ্রাউন্ড আপডেটার চালু
         asyncio.create_task(background_updater())
         
+        # কিবোর্ড ইন্টারাপ্ট হ্যান্ডেল করা
         while True:
             await asyncio.sleep(1)
             
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down...")
     except Exception as e:
         print(f"❌ Error: {e}")
 
