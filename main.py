@@ -14,10 +14,17 @@ GROUP_ID = -1002531902737
 # প্রথমে লোকাল সেশন ফাইল চেক করবে
 SESSION_FILE = "user_session_new.session"  # আপনার ফাইল নাম
 
-if os.path.exists(SESSION_FILE):
+# সেশন ফাইল এক্সিস্ট করে কিনা চেক
+session_exists = os.path.exists(SESSION_FILE)
+session_exists_alt = os.path.exists("user_session.session")
+
+if session_exists:
     # সরাসরি সেশন ফাইল ব্যবহার করুন
     client = TelegramClient(SESSION_FILE.replace('.session', ''), api_id, api_hash)
     print(f"✅ Using session file: {SESSION_FILE}")
+elif session_exists_alt:
+    client = TelegramClient("user_session", api_id, api_hash)
+    print(f"✅ Using session file: user_session.session")
 else:
     # Railway Environment Variable চেক করুন
     STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -38,13 +45,13 @@ else:
         client = TelegramClient(session_name, api_id, api_hash)
         print("✅ Using Base64 Session")
     else:
-        # ডিফল্ট সেশন ফাইল
-        client = TelegramClient("user_session", api_id, api_hash)
-        print("✅ Using default session file")
+        print("❌ ERROR: No session file or environment variable found!")
+        print("Please ensure 'user_session_new.session' file exists or set STRING_SESSION/TELETHON_SESSION")
+        exit(1)
 
 all_otps = []
 
-# ================= উন্নত ফাংশন (শুধু সার্চিং আপডেট) =================
+# ================= ফাংশন =================
 
 def get_country_flag_emoji(country_name):
     if not country_name or country_name == "Unknown":
@@ -153,30 +160,34 @@ def match_number_by_pattern(sms_number, search_number):
             if search_digits.startswith(prefix) and search_digits.endswith(suffix):
                 return True
     
-    # 3. শেষ 6 ডিজিট ম্যাচ (সবচেয়ে বেশি কাজ করে)
+    # 3. শেষ 7 ডিজিট ম্যাচ
+    if len(sms_digits) >= 7 and len(search_digits) >= 7:
+        if sms_digits[-7:] == search_digits[-7:]:
+            return True
+    
+    # 4. শেষ 6 ডিজিট ম্যাচ (সবচেয়ে বেশি কাজ করে)
     if len(sms_digits) >= 6 and len(search_digits) >= 6:
         if sms_digits[-6:] == search_digits[-6:]:
             return True
     
-    # 4. শেষ 5 ডিজিট ম্যাচ
+    # 5. শেষ 5 ডিজিট ম্যাচ
     if len(sms_digits) >= 5 and len(search_digits) >= 5:
         if sms_digits[-5:] == search_digits[-5:]:
             return True
     
-    # 5. শেষ 4 ডিজিট ম্যাচ
+    # 6. শেষ 4 ডিজিট ম্যাচ
     if len(sms_digits) >= 4 and len(search_digits) >= 4:
         if sms_digits[-4:] == search_digits[-4:]:
             return True
     
-    # 6. প্রথম 4 + শেষ 4 ডিজিট
-    if len(sms_digits) >= 8 and len(search_digits) >= 8:
-        if sms_digits[:4] == search_digits[:4] and sms_digits[-4:] == search_digits[-4:]:
+    # 7. প্রথম 5 + শেষ 4 ডিজিট
+    if len(sms_digits) >= 9 and len(search_digits) >= 9:
+        if sms_digits[:5] == search_digits[:5] and sms_digits[-4:] == search_digits[-4:]:
             return True
     
-    # 7. আংশিক - যদি সার্চ নম্বরের শেষ অংশ স্মস নম্বরের সাথে মেলে
-    if len(search_digits) >= 6 and len(sms_digits) >= 6:
-        # সার্চ নম্বরের শেষ 6 ডিজিট যদি স্মস নম্বরের কোথাও থাকে
-        if search_digits[-6:] in sms_digits:
+    # 8. প্রথম 4 + শেষ 4 ডিজিট
+    if len(sms_digits) >= 8 and len(search_digits) >= 8:
+        if sms_digits[:4] == search_digits[:4] and sms_digits[-4:] == search_digits[-4:]:
             return True
     
     return False
