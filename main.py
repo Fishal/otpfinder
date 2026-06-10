@@ -11,22 +11,18 @@ api_hash = "e6045668a34aecdcd802eca0db3844fa"
 GROUP_ID = -1002531902737
 
 # ================= সেশন ফাইল সাপোর্ট (আপডেটেড) =================
-# প্রথমে লোকাল সেশন ফাইল চেক করবে
-SESSION_FILE = "user_session_new.session"  # আপনার ফাইল নাম
+SESSION_FILE = "user_session_new.session"
 
-# সেশন ফাইল এক্সিস্ট করে কিনা চেক
 session_exists = os.path.exists(SESSION_FILE)
 session_exists_alt = os.path.exists("user_session.session")
 
 if session_exists:
-    # সরাসরি সেশন ফাইল ব্যবহার করুন
     client = TelegramClient(SESSION_FILE.replace('.session', ''), api_id, api_hash)
     print(f"✅ Using session file: {SESSION_FILE}")
 elif session_exists_alt:
     client = TelegramClient("user_session", api_id, api_hash)
     print(f"✅ Using session file: user_session.session")
 else:
-    # Railway Environment Variable চেক করুন
     STRING_SESSION = os.environ.get("STRING_SESSION")
     TELETHON_SESSION = os.environ.get("TELETHON_SESSION")
     
@@ -50,6 +46,7 @@ else:
         exit(1)
 
 all_otps = []
+pending_searches = {}  # {normalized_number: asyncio.Event}
 
 # ================= ফাংশন =================
 
@@ -125,69 +122,44 @@ def extract_country(text):
     return "Unknown"
 
 def normalize_number(number):
-    """নম্বর থেকে সব অ-ডিজিট বাদ দাও"""
     if not number:
         return ""
     return re.sub(r'[^0-9]', '', number)
 
 def match_number_by_pattern(sms_number, search_number):
-    """উন্নত ম্যাচিং অ্যালগরিদম - যেকোনো ভাবে ম্যাচ করবে"""
     if not sms_number or not search_number:
         return False
     
-    # নরমালাইজড নম্বর
     sms_digits = normalize_number(sms_number)
     search_digits = normalize_number(search_number)
     
     if not sms_digits or not search_digits:
         return False
     
-    # 1. সম্পূর্ণ ম্যাচ
     if sms_digits == search_digits:
         return True
     
-    # 2. *** প্যাটার্ন ম্যাচ (যেমন: 9929***3727)
     if '*' in sms_number:
-        # প্যাটার্ন তৈরি করে ম্যাচ
         pattern = '^' + sms_number.replace('*', '[0-9]') + '$'
         if re.match(pattern, search_number):
             return True
         
-        # prefix + suffix ম্যাচ
         parts = sms_number.split('***')
         if len(parts) == 2:
             prefix, suffix = parts
             if search_digits.startswith(prefix) and search_digits.endswith(suffix):
                 return True
     
-    # 3. শেষ 7 ডিজিট ম্যাচ
-    if len(sms_digits) >= 7 and len(search_digits) >= 7:
-        if sms_digits[-7:] == search_digits[-7:]:
-            return True
-    
-    # 4. শেষ 6 ডিজিট ম্যাচ (সবচেয়ে বেশি কাজ করে)
     if len(sms_digits) >= 6 and len(search_digits) >= 6:
         if sms_digits[-6:] == search_digits[-6:]:
             return True
     
-    # 5. শেষ 5 ডিজিট ম্যাচ
     if len(sms_digits) >= 5 and len(search_digits) >= 5:
         if sms_digits[-5:] == search_digits[-5:]:
             return True
     
-    # 6. শেষ 4 ডিজিট ম্যাচ
     if len(sms_digits) >= 4 and len(search_digits) >= 4:
         if sms_digits[-4:] == search_digits[-4:]:
-            return True
-    
-    # 7. প্রথম 5 + শেষ 4 ডিজিট
-    if len(sms_digits) >= 9 and len(search_digits) >= 9:
-        if sms_digits[:5] == search_digits[:5] and sms_digits[-4:] == search_digits[-4:]:
-            return True
-    
-    # 8. প্রথম 4 + শেষ 4 ডিজিট
-    if len(sms_digits) >= 8 and len(search_digits) >= 8:
-        if sms_digits[:4] == search_digits[:4] and sms_digits[-4:] == search_digits[-4:]:
             return True
     
     return False
@@ -210,7 +182,12 @@ def extract_clean_message(text):
     
     return text[:150] + "..." if len(text) > 150 else text
 
-# ================= মেসেজ সংগ্রহ =================
+async def check_new_otp_for_number(normalized_num):
+    """Check if new OTP arrived for this number"""
+    for item in all_otps:
+        if match_number_by_pattern(item['number'], normalized_num):
+            return item
+    return None
 
 async def fetch_otps():
     global all_otps
@@ -236,7 +213,6 @@ async def fetch_otps():
             flag_emoji = get_country_flag_emoji(country)
             clean_msg = extract_clean_message(text)
             
-            # ডুপ্লিকেট চেক - নরমালাইজড নম্বর ব্যবহার করে
             key = f"{normalize_number(number)}_{otp}"
             if key in seen:
                 continue
@@ -256,11 +232,19 @@ async def fetch_otps():
                 break
         
         messages.reverse()
+        
+        # Check if any pending search got new OTP
+        for normalized_num, event in list(pending_searches.items()):
+            if not event.is_set():
+                otp_data = await check_new_otp_for_number(normalized_num)
+                if otp_data:
+                    event.otp_data = otp_data
+                    event.set()
+        
         all_otps = messages
         
         print(f"✅ {len(messages)} টি OTP পাওয়া গেছে!")
         
-        # ডিবাগ: প্রথম 10টা দেখাও
         for i, m in enumerate(messages[:10]):
             print(f"   {i+1}. {m['number']} → {m['otp']}")
         
@@ -305,7 +289,6 @@ async def index(request):
                 padding: 20px 16px;
             }
 
-            /* Header */
             .header {
                 text-align: center;
                 margin-bottom: 20px;
@@ -352,7 +335,6 @@ async def index(request):
                 margin-top: 4px;
             }
 
-            /* Controls */
             .controls {
                 display: flex;
                 justify-content: flex-end;
@@ -383,7 +365,6 @@ async def index(request):
                 transform: scale(0.96);
             }
 
-            /* Modal */
             .modal {
                 display: none;
                 position: fixed;
@@ -434,7 +415,6 @@ async def index(request):
                 font-weight: bold;
             }
 
-            /* Search Card */
             .search-card {
                 background: #1e293b;
                 border-radius: 24px;
@@ -503,7 +483,11 @@ async def index(request):
                 transform: scale(0.96);
             }
 
-            /* Loading */
+            .search-btn:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+
             .loading {
                 text-align: center;
                 padding: 40px;
@@ -524,7 +508,48 @@ async def index(request):
                 100% { transform: rotate(360deg); }
             }
 
-            /* Result Card */
+            .timer-circle {
+                width: 80px;
+                height: 80px;
+                margin: 0 auto 15px;
+                position: relative;
+            }
+
+            .timer-svg {
+                transform: rotate(-90deg);
+            }
+
+            .timer-bg {
+                stroke: #334155;
+                stroke-width: 6;
+                fill: none;
+            }
+
+            .timer-progress {
+                stroke: #38bdf8;
+                stroke-width: 6;
+                fill: none;
+                stroke-dasharray: 226;
+                stroke-dashoffset: 0;
+                transition: stroke-dashoffset 1s linear;
+            }
+
+            .timer-text {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                font-size: 24px;
+                font-weight: bold;
+                color: #38bdf8;
+            }
+
+            .waiting-text {
+                font-size: 14px;
+                color: #94a3b8;
+                margin-top: 10px;
+            }
+
             .result-card {
                 background: #1e293b;
                 border-radius: 24px;
@@ -689,7 +714,6 @@ async def index(request):
                 background: #fee2e2;
             }
 
-            /* Telegram Button */
             .telegram-btn {
                 display: flex;
                 align-items: center;
@@ -752,6 +776,8 @@ async def index(request):
                 .number-value { font-size: 16px; }
                 .platform-name { font-size: 16px; }
                 .message-value { font-size: 11px; }
+                .timer-text { font-size: 20px; }
+                .timer-circle { width: 70px; height: 70px; }
             }
 
             @media (max-width: 380px) {
@@ -767,7 +793,7 @@ async def index(request):
                     <img src="https://i.ibb.co/RpzTyt1v/bot.jpg" alt="bot" border="0">
                 </div>
                 <h1>GetPaid OTP Finder</h1>
-                <div class="full-title">🔐 Full Connected GetPaid OTP 2.0</div>
+                <div class="full-title">🔐 Full Connected GetPaid OTP 2.0 | Live OTP Tracker</div>
             </div>
 
             <div class="controls">
@@ -775,11 +801,11 @@ async def index(request):
                 <button class="info-btn" onclick="openModal()">ℹ️ Info</button>
             </div>
 
-            <!-- Modal -->
             <div id="infoModal" class="modal">
                 <div class="modal-content">
                     <h3>ℹ️ Information</h3>
                     <p>📌 Click on OTP box to copy code instantly</p>
+                    <p>⏱️ Search waits 5 seconds for live OTP</p>
                     <p>🔒 100% Safe & Secured Server</p>
                     <p>📱 Enter number → Click Search</p>
                     <button class="close-modal" onclick="closeModal()">Got it</button>
@@ -789,17 +815,27 @@ async def index(request):
             <div class="search-card">
                 <div class="search-box">
                     <input type="text" id="numberInput" placeholder="📞 Enter phone number" autocomplete="off">
-                    <button class="search-btn" onclick="searchOTP()">🔍 SEARCH OTP</button>
+                    <button class="search-btn" onclick="searchOTPWithTimer()" id="searchBtn">🔍 SEARCH OTP</button>
                 </div>
             </div>
 
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <p>Searching OTP...</p>
+            <div id="loadingArea" style="display: none;">
+                <div class="loading">
+                    <div class="timer-circle">
+                        <svg class="timer-svg" width="80" height="80" viewBox="0 0 100 100">
+                            <circle class="timer-bg" cx="50" cy="50" r="45" />
+                            <circle class="timer-progress" id="timerProgress" cx="50" cy="50" r="45" />
+                        </svg>
+                        <div class="timer-text" id="timerText">5</div>
+                    </div>
+                    <p class="waiting-text">⏳ Waiting for OTP... Scanning live messages</p>
+                    <p style="font-size: 12px; color: #64748b;">System will auto-detect OTP within 5 seconds</p>
+                </div>
             </div>
 
             <div class="not-found" id="notFound">
-                ❌ OTP not found for this number
+                ❌ OTP Not Found! No code received within 5 seconds.<br>
+                <span style="font-size: 13px;">💡 Try requesting OTP again and click search</span>
             </div>
 
             <div class="result-card" id="resultCard">
@@ -830,7 +866,6 @@ async def index(request):
                 </div>
             </div>
 
-            <!-- Telegram Button -->
             <a class="telegram-btn" href="https://t.me/otpincomereal2_bot" target="_blank">
                 <div class="telegram-icon">
                     <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -845,6 +880,9 @@ async def index(request):
 
         <script>
             let currentOTP = '';
+            let searchTimeout = null;
+            let timerInterval = null;
+            let isSearching = false;
 
             function toggleTheme() {
                 document.body.classList.toggle('light');
@@ -883,7 +921,42 @@ async def index(request):
                 return `<div style="width:40px;height:40px;background:#334155;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;">?</div>`;
             }
 
-            async function searchOTP() {
+            function updateTimer(seconds) {
+                const timerText = document.getElementById('timerText');
+                const progressCircle = document.getElementById('timerProgress');
+                
+                if (timerText) timerText.textContent = seconds;
+                
+                if (progressCircle) {
+                    const circumference = 2 * Math.PI * 45;
+                    const offset = circumference - (seconds / 5) * circumference;
+                    progressCircle.style.strokeDasharray = circumference;
+                    progressCircle.style.strokeDashoffset = offset;
+                }
+            }
+
+            function startTimer(seconds, onComplete) {
+                let currentSeconds = seconds;
+                updateTimer(currentSeconds);
+                
+                timerInterval = setInterval(() => {
+                    currentSeconds--;
+                    updateTimer(currentSeconds);
+                    
+                    if (currentSeconds <= 0) {
+                        clearInterval(timerInterval);
+                        timerInterval = null;
+                        if (onComplete) onComplete();
+                    }
+                }, 1000);
+            }
+
+            async function searchOTPWithTimer() {
+                if (isSearching) {
+                    showToast('⏳ Already searching, please wait...', true);
+                    return;
+                }
+
                 let number = document.getElementById('numberInput').value.trim();
                 
                 if (!number) {
@@ -891,36 +964,93 @@ async def index(request):
                     return;
                 }
 
-                document.getElementById('loading').style.display = 'block';
+                isSearching = true;
+                const searchBtn = document.getElementById('searchBtn');
+                searchBtn.disabled = true;
+                searchBtn.textContent = '⏳ SEARCHING...';
+
+                document.getElementById('loadingArea').style.display = 'block';
                 document.getElementById('resultCard').style.display = 'none';
                 document.getElementById('notFound').style.display = 'none';
 
+                // Reset timer display
+                updateTimer(5);
+
+                let otpFound = false;
+                let resultData = null;
+
+                // Start countdown timer
+                let timerExpired = false;
+                
+                startTimer(5, () => {
+                    timerExpired = true;
+                    if (!otpFound) {
+                        // Timer expired, stop waiting
+                        clearTimeout(searchTimeout);
+                        finishSearch(false, null);
+                    }
+                });
+
+                // API call with long polling (5 seconds wait)
                 try {
-                    let response = await fetch(`/search?number=${encodeURIComponent(number)}`);
-                    let data = await response.json();
-
-                    document.getElementById('loading').style.display = 'none';
-
-                    if (data.found) {
-                        currentOTP = data.data.otp;
-                        document.getElementById('resultNumber').innerText = data.data.number;
-                        document.getElementById('platformName').innerHTML = data.data.platform;
-                        document.getElementById('platformIcon').innerHTML = getPlatformIcon(data.data.platform);
-                        document.getElementById('countryFlag').innerHTML = data.data.flag || '🏳️';
-                        document.getElementById('countryName').innerHTML = data.data.country || 'Unknown';
-                        document.getElementById('resultOTP').innerHTML = data.data.otp;
-                        document.getElementById('resultMessage').innerHTML = data.data.message || '-';
-                        document.getElementById('resultCard').style.display = 'block';
-                        document.getElementById('otpBox').classList.remove('copied');
-                    } else {
-                        document.getElementById('notFound').style.display = 'block';
-                        setTimeout(() => {
-                            document.getElementById('notFound').style.display = 'none';
-                        }, 3000);
+                    const controller = new AbortController();
+                    searchTimeout = setTimeout(() => controller.abort(), 5500);
+                    
+                    const response = await fetch(`/search-wait?number=${encodeURIComponent(number)}`, {
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(searchTimeout);
+                    
+                    if (timerExpired && !otpFound) {
+                        return;
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.found && !timerExpired) {
+                        otpFound = true;
+                        resultData = data.data;
+                        finishSearch(true, resultData);
+                    } else if (!timerExpired) {
+                        finishSearch(false, null);
                     }
                 } catch (error) {
-                    document.getElementById('loading').style.display = 'none';
-                    showToast('❌ Server error', true);
+                    clearTimeout(searchTimeout);
+                    if (!timerExpired && error.name !== 'AbortError') {
+                        finishSearch(false, null);
+                    }
+                }
+            }
+
+            function finishSearch(found, data) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+                
+                document.getElementById('loadingArea').style.display = 'none';
+                
+                const searchBtn = document.getElementById('searchBtn');
+                searchBtn.disabled = false;
+                searchBtn.textContent = '🔍 SEARCH OTP';
+                isSearching = false;
+
+                if (found && data) {
+                    currentOTP = data.otp;
+                    document.getElementById('resultNumber').innerText = data.number;
+                    document.getElementById('platformName').innerHTML = data.platform;
+                    document.getElementById('platformIcon').innerHTML = getPlatformIcon(data.platform);
+                    document.getElementById('countryFlag').innerHTML = data.flag || '🏳️';
+                    document.getElementById('countryName').innerHTML = data.country || 'Unknown';
+                    document.getElementById('resultOTP').innerHTML = data.otp;
+                    document.getElementById('resultMessage').innerHTML = data.message || '-';
+                    document.getElementById('resultCard').style.display = 'block';
+                    document.getElementById('otpBox').classList.remove('copied');
+                    showToast(`🎉 OTP Found: ${data.otp}`);
+                } else {
+                    document.getElementById('notFound').style.display = 'block';
+                    setTimeout(() => {
+                        document.getElementById('notFound').style.display = 'none';
+                    }, 4000);
                 }
             }
 
@@ -967,7 +1097,7 @@ async def index(request):
             }
 
             document.getElementById('numberInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') searchOTP();
+                if (e.key === 'Enter') searchOTPWithTimer();
             });
 
             window.onclick = function(event) {
@@ -982,44 +1112,54 @@ async def index(request):
     '''
     return web.Response(text=html, content_type='text/html')
 
-async def search_api(request):
+async def search_wait_api(request):
+    """API that waits up to 5 seconds for OTP to arrive"""
     number = request.query.get('number', '').strip()
     if not number:
         return web.json_response({'found': False})
     
-    print(f"\n🔍 Searching: {number}")
+    print(f"\n🔍 [LIVE] Waiting for OTP: {number}")
     
-    # সব ম্যাচ খুঁজে বের কর
-    matches = []
+    normalized_num = normalize_number(number)
+    
+    # First, check if OTP already exists
     for item in all_otps:
         if match_number_by_pattern(item['number'], number):
-            matches.append(item)
-            print(f"   ✅ Matched: {item['number']} → {item['otp']}")
+            print(f"   ✅ Immediate match found: {item['number']} → {item['otp']}")
+            return web.json_response({'found': True, 'data': item})
     
-    if matches:
-        # বেস্ট ম্যাচ সিলেক্ট কর (যার OTP আছে এবং বেশি ম্যাচ করে)
-        best_match = matches[0]
-        for item in matches:
-            # OTP থাকলে প্রাধান্য
-            if item['otp'] != 'Not Found' and best_match['otp'] == 'Not Found':
-                best_match = item
-            # সম্পূর্ণ নম্বর ম্যাচ করলে প্রাধান্য
-            elif normalize_number(item['number']) == normalize_number(number):
-                best_match = item
-                break
-        return web.json_response({'found': True, 'data': best_match})
+    # Create event for this search
+    event = asyncio.Event()
+    event.otp_data = None
+    pending_searches[normalized_num] = event
     
-    print(f"   ❌ Not found: {number}")
-    return web.json_response({'found': False})
+    try:
+        # Wait up to 5 seconds for OTP
+        await asyncio.wait_for(event.wait(), timeout=5.0)
+        
+        if event.otp_data:
+            print(f"   ✅ OTP arrived within 5s: {event.otp_data['number']} → {event.otp_data['otp']}")
+            return web.json_response({'found': True, 'data': event.otp_data})
+        else:
+            print(f"   ❌ No OTP within 5 seconds")
+            return web.json_response({'found': False})
+            
+    except asyncio.TimeoutError:
+        print(f"   ⏰ Timeout (5s) - No OTP for: {number}")
+        return web.json_response({'found': False})
+    finally:
+        # Clean up
+        pending_searches.pop(normalized_num, None)
 
 async def background_updater():
+    """Background task that continuously fetches new messages"""
     while True:
         await fetch_otps()
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)  # Check every 3 seconds
 
 async def main():
     print("=" * 50)
-    print("🔰 GetPaid OTP Finder v2.0")
+    print("🔰 GetPaid OTP Finder v3.0 - LIVE OTP TRACKER")
     print("=" * 50)
     
     try:
@@ -1032,7 +1172,7 @@ async def main():
         
         app = web.Application()
         app.router.add_get('/', index)
-        app.router.add_get('/search', search_api)
+        app.router.add_get('/search-wait', search_wait_api)
         
         port = int(os.environ.get("PORT", 20300))
         
@@ -1043,6 +1183,7 @@ async def main():
         
         print("=" * 50)
         print(f"✅ Server running at: http://0.0.0.0:{port}")
+        print("✨ New Feature: 5-second live OTP waiting with animated timer!")
         print("=" * 50)
         
         asyncio.create_task(background_updater())
